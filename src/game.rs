@@ -1,9 +1,8 @@
-use rustc_hash::FxHashMap;
+//! Holds the base class for a game that MTD(f) can solve.
+//! To use the crate, implement [`GameState`] for your game.
+
 use std::cmp::PartialOrd;
 use std::hash::Hash;
-use std::sync::RwLock;
-
-type T = f32;
 
 /// The value returned by an evaluation function.
 ///
@@ -13,20 +12,20 @@ type T = f32;
 ///
 /// - [`Heuristic`](Evaluation::Heuristic) values represent the estimated value of a game still in progress.
 pub enum Evaluation {
-    Exact(T),
-    Heuristic(T),
+    Exact(f32),
+    Heuristic(f32),
 }
 
 impl Evaluation {
     /// Gets the value of the contents, ignoring the variant.
-    pub fn val(&self) -> &T {
+    pub fn val(&self) -> &f32 {
         match self {
             Self::Exact(t) | Self::Heuristic(t) => t,
         }
     }
 
     /// Like `Evaluation::val`, but consumes and gives ownership.
-    pub fn take(self) -> T {
+    pub fn take(self) -> f32 {
         match self {
             Self::Exact(t) | Self::Heuristic(t) => t,
         }
@@ -41,7 +40,7 @@ pub enum Player {
 
 impl Player {
     /// The opposite player.
-    pub fn flip(&self) -> Self {
+    pub const fn flip(&self) -> Self {
         match self {
             Self::Maximizing => Self::Minimizing,
             Self::Minimizing => Self::Maximizing,
@@ -49,7 +48,7 @@ impl Player {
     }
 
     /// This is '1' for the maximizer and `-1` for the minimizer.
-    pub fn sign(&self) -> T {
+    pub const fn sign(&self) -> f32 {
         match self {
             Self::Maximizing => 1.0,
             Self::Minimizing => -1.0,
@@ -64,15 +63,15 @@ impl Player {
 /// but any signed numeric type will work.
 ///
 /// To implement this trait, you must implement [`GameState::evaluate`], [`GameState::moves`],
-/// and [`GameState::turn`]. You can optionally implement [`GameState::order_moves`] or
-/// [`GameState::initial_f`] to speed up the algorithm.
+/// and [`GameState::turn`]. You can optionally implement [`GameState::order_moves`],
+/// [`GameState::initial_f`], or [`GameState::mtdf_window`] to speed up the algorithm.
 pub trait GameState: Sized + Clone + Hash + Eq {
     /// Returns the signed value of the game.
-    /// If the game is over, it should be ['Exact']
+    /// If the game is over, it should be [`Evaluation::Exact`]
     /// containing the value of the game.
     ///
     /// If the game is still in progress, it should
-    /// be ['Heuristic'] with a guess at the game's
+    /// be [`Evaluation::Heuristic`] with a guess at the game's
     /// value.
     fn evaluate(&self) -> Evaluation;
 
@@ -92,8 +91,8 @@ pub trait GameState: Sized + Clone + Hash + Eq {
     ///
     /// By default, the move order will be determined by the transposition table
     /// entry first, then falls back on the evaluation if no entry exists.
-    fn order_moves(&self, moves: Vec<(Self, Option<T>)>) -> Vec<Self> {
-        let mut moves: Vec<(T, Self)> = moves
+    fn order_moves(&self, moves: Vec<(Self, Option<f32>)>) -> Vec<Self> {
+        let mut moves: Vec<(f32, Self)> = moves
             .into_iter()
             .map(|(m, v)| {
                 let s = self.turn().flip().sign();
@@ -108,154 +107,22 @@ pub trait GameState: Sized + Clone + Hash + Eq {
 
     /// Initial guess for the MTD(f) algorithm. The closer
     /// this is to the actual evaluation, the faster it will run.
-    fn initial_f(&self) -> T {
+    fn initial_f(&self) -> f32 {
         0.0
     }
-}
 
-enum TranspositionEntry {
-    Exact,
-    Lowerbound,
-    Upperbound,
-}
-
-pub struct MTDBot<G>
-where
-    G: GameState,
-{
-    table: Option<RwLock<FxHashMap<G, (TranspositionEntry, G, T, usize)>>>,
-}
-
-impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
-    pub fn new() -> Self {
-        let table = FxHashMap::default();
-        Self {
-            table: Some(RwLock::new(table)),
-        }
+    /// Window size for the MTD(f) algorithm. This should be a
+    /// float strictly greater than zero. The magnitude should
+    /// be related to the difference between the largest possible
+    /// evaluation and the smallest possible evaluation.
+    fn mtdf_window(&self) -> f32 {
+        1.0
     }
 
-    pub fn new_memoryless() -> Self {
-        Self { table: None }
-    }
-
-    pub fn solve(&self, game: &G, depth: usize) -> G {
-        // TODO: add MTDF
-        self.negamax(game, depth, T::NEG_INFINITY, T::INFINITY).1
-    }
-
-    fn negamax(
-        &self,
-        game: &G,
-        depth: usize,
-        mut alpha: T,
-        beta: T,
-        // locked_transposition: Option<&RwLock<FxHashMap<G, (TranspositionEntry, G, T, usize)>>>,
-    ) -> (T, G) {
-        let alpha_orig = alpha.clone();
-        if let Some(transposition) = self.table {
-            if let Ok(table) = transposition.read() {
-                if let Some((entry, g, t, d)) = table.get(game) {
-                    if d >= &depth {
-                        match entry {
-                            TranspositionEntry::Exact => return (t.clone(), g.clone()),
-                            TranspositionEntry::Lowerbound => alpha = alpha.max(*t),
-                            TranspositionEntry::Upperbound => alpha = alpha.min(*t),
-                        }
-
-                        if alpha >= beta {
-                            match entry {
-                                TranspositionEntry::Exact
-                                | TranspositionEntry::Lowerbound
-                                | TranspositionEntry::Upperbound => return (t.clone(), g.clone()),
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let evaluation: Evaluation = game.evaluate();
-
-        if let Evaluation::Exact(v) = evaluation {
-            let res: T = game.turn().sign() * v;
-            return (res, game.clone());
-        }
-
-        if depth == 0 {
-            let res: T = game.turn().sign() * evaluation.take();
-            return (res, game.clone());
-        }
-
-        let children = game.moves();
-        let children: Vec<(G, Option<T>)> = {
-            if let Some(transposition) = self.table {
-                if let Ok(table) = transposition.read() {
-                    children
-                        .into_iter()
-                        .map(|g| (table.get(&g), g))
-                        .map(|(v, g)| (g, v.map(|s| s.2.clone())))
-                        .collect()
-                } else {
-                    children.into_iter().map(|g| (g, None)).collect()
-                }
-            } else {
-                children.into_iter().map(|g| (g, None)).collect()
-            }
-        };
-        let mut children = game.order_moves(children);
-
-        assert!(
-            !children.is_empty(),
-            "Evaluation returned Heuristic on a game with no legal moves."
-        );
-        let res1 = self.negamax(
-            &children.remove(0),
-            depth.saturating_sub(1),
-            -beta.clone(),
-            -alpha.clone(),
-        );
-
-        let (mut value, mut best_child) = (-res1.0, res1.1);
-        alpha = alpha.max(value);
-
-        for child in children {
-            if alpha >= beta {
-                break;
-            }
-            let nega_res = self.negamax(
-                &child,
-                depth.saturating_sub(1),
-                -beta.clone(),
-                -alpha.clone(),
-            );
-            let nega_res = (-nega_res.0, nega_res.1);
-            if nega_res.0 > value {
-                value = nega_res.0;
-                best_child = child;
-            }
-            alpha = alpha.max(value);
-        }
-
-        if let Some(transposition) = locked_transposition {
-            {
-                if let Ok(mut table) = transposition.write() {
-                    let entry_type = {
-                        if value <= alpha_orig {
-                            TranspositionEntry::Upperbound
-                        } else if value >= beta {
-                            TranspositionEntry::Lowerbound
-                        } else {
-                            TranspositionEntry::Exact
-                        }
-                    };
-                    table.insert(
-                        game.clone(),
-                        (entry_type, best_child.clone(), value.clone(), depth),
-                    );
-                }
-            }
-        }
-
-        (value, best_child)
+    /// A tolerance parameter for accuracy. It should be a float
+    /// strictly greater than zero. Return a smaller float if
+    /// the algorithm has numeric issues.
+    fn epsilon(&self) -> f32 {
+        1e-6
     }
 }
