@@ -64,7 +64,8 @@ impl Player {
 ///
 /// To implement this trait, you must implement [`GameState::evaluate`], [`GameState::moves`],
 /// and [`GameState::turn`]. You can optionally implement [`GameState::order_moves`],
-/// [`GameState::initial_f`], or [`GameState::mtdf_window`] to speed up the algorithm.
+/// [`GameState::initial_f`], [`GameState::mtdf_window`], or [`GameState::abdad_defer_depth`]
+///  to speed up the algorithm.
 pub trait GameState: Sized + Clone + Hash + Eq {
     /// Returns the signed value of the game.
     /// If the game is over, it should be [`Evaluation::Exact`]
@@ -107,6 +108,10 @@ pub trait GameState: Sized + Clone + Hash + Eq {
 
     /// Initial guess for the MTD(f) algorithm. The closer
     /// this is to the actual evaluation, the faster it will run.
+    ///
+    /// Avoid doing expensive computations here. Typically you
+    /// return a constant representing how the game would end
+    /// between perfect players.
     fn initial_f(&self) -> f32 {
         0.0
     }
@@ -115,6 +120,9 @@ pub trait GameState: Sized + Clone + Hash + Eq {
     /// float strictly greater than zero. The magnitude should
     /// be related to the difference between the largest possible
     /// evaluation and the smallest possible evaluation.
+    ///
+    /// Engines tend to make this small on the first turn, then
+    /// increase it on future turns.
     fn mtdf_window(&self) -> f32 {
         1.0
     }
@@ -123,6 +131,12 @@ pub trait GameState: Sized + Clone + Hash + Eq {
     /// strictly greater than zero. Return a smaller float if
     /// the algorithm has numeric issues.
     fn epsilon(&self) -> f32 {
-        1e-6
+        1e-10
+    }
+
+    /// The depth where the engine will start searching using
+    /// multiple cores.
+    fn abdad_defer_depth(&self) -> usize {
+        3
     }
 }

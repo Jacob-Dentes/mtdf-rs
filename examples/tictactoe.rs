@@ -81,10 +81,12 @@ impl TicTacToe {
     pub fn board(&self) -> &Board {
         &self.board
     }
+}
 
-    pub fn board_string(&self) -> String {
+impl From<&TicTacToe> for String {
+    fn from(value: &TicTacToe) -> Self {
         let mut board_str = "".to_string();
-        let board: Vec<char> = self
+        let board: Vec<char> = value
             .board
             .iter()
             .map(|c| match c {
@@ -138,6 +140,11 @@ impl GameState for TicTacToe {
             O
         }
     }
+
+    // disable parallelization because TicTacToe is so simple
+    fn abdad_defer_depth(&self) -> usize {
+        usize::MAX
+    }
 }
 
 fn main() {
@@ -149,33 +156,43 @@ fn main() {
     let now = std::time::Instant::now();
     let res = bot.mtdf(&root, &10);
     println!("Solved root in {} microseconds", now.elapsed().as_micros());
+    let report_board = |board: &TicTacToe, val: &f32| {
+        println!(
+            "Got valuation {} with board: \n{}\n",
+            val,
+            String::from(board)
+        );
+    };
+    report_board(&res.1, &res.0);
 
     // TicTacToe can be solved in a draw, so our
     // evaluation should be about 0.0
     assert!(res.0 <= root.epsilon());
 
-    println!("Simulating a bot with an X in the top left.");
+    println!("Simulating a bot with an X in the top left. Expecting O to play middle.");
     // board with an X in the top left
     let x_top_left = root.do_move(0);
     let res = bot.mtdf(&x_top_left, &10);
+    report_board(&res.1, &res.0);
 
     // An optimal O player must play middle
     // in response to corner
     assert!(res.1.board()[4] == Square::O);
 
-    println!("Simulating a bot with an X in the top left, O in the middle.");
+    println!("Simulating a bot with an X in the top left, O in the middle right. Expecting a valuation of 2.0.");
     // board with an X in top left, O in middle right
     let x_o_board = x_top_left.do_move(5);
     let res = bot.mtdf(&x_o_board, &10);
+    report_board(&res.1, &res.0);
 
     // O played suboptimally, so X should win
     assert!((res.0 - 2.0).abs() <= root.epsilon());
 
     // simulate two bots playing
     let mut game = root;
-    println!("Simulating a bot TicTacToe game.\n{}", game.board_string());
+    println!("Simulating a bot TicTacToe game.\n{}", String::from(&game));
     while game.check_over().is_none() {
         game = bot.mtdf(&game, &10).1;
-        println!("{}", game.board_string());
+        println!("{}", String::from(&game));
     }
 }
