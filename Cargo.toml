@@ -1,12 +1,13 @@
 [package]
 name = "mtdf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A (bad) Rust implementation of the MTD(f) algorithm."
 categories = ["game-development"]
 keywords = ["ai", "game", "minimax", "mtdf"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Jacob-Dentes/mtdf-rs/tree/main"
+documentation = "https://docs.rs/mtdf"
 
 [dependencies]
 dashmap = "6.1.0"
