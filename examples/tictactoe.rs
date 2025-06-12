@@ -23,6 +23,7 @@ struct TicTacToe {
     x_turn: bool,
 }
 
+// Implements the game of TicTacToe itself
 impl TicTacToe {
     pub fn new() -> Self {
         TicTacToe {
@@ -83,6 +84,7 @@ impl TicTacToe {
     }
 }
 
+// Convenience method to let us see the board
 impl From<&TicTacToe> for String {
     fn from(value: &TicTacToe) -> Self {
         let mut board_str = "".to_string();
@@ -106,7 +108,13 @@ impl From<&TicTacToe> for String {
     }
 }
 
+// We need to implement GameState in order to run
+// an MTDf bot on it. See docs for what is required
+// to implement and what is optional.
 impl GameState for TicTacToe {
+    // Check if the game has been won.
+    // If it has, return Evaluation::Exact(score) where score is signed based on who won
+    // If it hasn't, return Evaluation::Heuristic(score) with a guess for who is winning
     fn evaluate(&self) -> Evaluation {
         match self.check_over() {
             Some(Square::X) => return Evaluation::Exact(2.0 * X.sign()),
@@ -121,6 +129,7 @@ impl GameState for TicTacToe {
         Evaluation::Heuristic(0.0)
     }
 
+    // Given the game state, what moves are legal?
     fn moves(&self) -> impl IntoIterator<Item = Self> {
         let mut res_vec: Vec<TicTacToe> = Vec::with_capacity(9);
 
@@ -133,6 +142,7 @@ impl GameState for TicTacToe {
         res_vec
     }
 
+    // Given the gamestate, who's turn is it?
     fn turn(&self) -> Player {
         if self.x_turn {
             X
@@ -141,7 +151,7 @@ impl GameState for TicTacToe {
         }
     }
 
-    // disable parallelization because TicTacToe is so simple
+    // Disable parallelization because TicTacToe is so simple
     fn abdad_defer_depth(&self) -> usize {
         usize::MAX
     }
@@ -154,7 +164,7 @@ fn main() {
     println!("Simulating a bot at the root.");
     let bot = MTDBot::<TicTacToe>::new();
     let now = std::time::Instant::now();
-    let res = bot.mtdf(&root, &10);
+    let res = bot.mtdf(&root, &10, None);
     println!("Solved root in {} microseconds", now.elapsed().as_micros());
     let report_board = |board: &TicTacToe, val: &f32| {
         println!(
@@ -172,7 +182,7 @@ fn main() {
     println!("Simulating a bot with an X in the top left. Expecting O to play middle.");
     // board with an X in the top left
     let x_top_left = root.do_move(0);
-    let res = bot.mtdf(&x_top_left, &10);
+    let res = bot.mtdf(&x_top_left, &10, None);
     report_board(&res.1, &res.0);
 
     // An optimal O player must play middle
@@ -182,7 +192,7 @@ fn main() {
     println!("Simulating a bot with an X in the top left, O in the middle right. Expecting a valuation of 2.0.");
     // board with an X in top left, O in middle right
     let x_o_board = x_top_left.do_move(5);
-    let res = bot.mtdf(&x_o_board, &10);
+    let res = bot.mtdf(&x_o_board, &10, None);
     report_board(&res.1, &res.0);
 
     // O played suboptimally, so X should win
@@ -192,7 +202,7 @@ fn main() {
     let mut game = root;
     println!("Simulating a bot TicTacToe game.\n{}", String::from(&game));
     while game.check_over().is_none() {
-        game = bot.mtdf(&game, &10).1;
+        game = bot.mtdf(&game, &10, None).1;
         println!("{}", String::from(&game));
     }
 }

@@ -2,6 +2,7 @@
 //! which runs the MTD(f) algorithm on a game.
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 // TODO: benchmark other concurrent maps with this workload
 // see https://github.com/xacrimon/conc-map-bench?tab=readme-ov-file
@@ -51,7 +52,14 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
         Self { table: None }
     }
 
-    fn negamax(&self, game: &G, depth: usize, mut alpha: f32, mut beta: f32) -> (f32, G) {
+    fn negamax(
+        &self,
+        game: &G,
+        depth: usize,
+        mut alpha: f32,
+        mut beta: f32,
+        time: &RwLock<Option<Instant>>,
+    ) -> (f32, G) {
         let alpha_orig = alpha.clone();
         if let Some(table) = &self.table {
             if let Some(map_entry) = table.get(game) {
@@ -107,6 +115,7 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
             depth.saturating_sub(1),
             -beta.clone(),
             -alpha.clone(),
+            time,
         );
 
         let (mut value, mut best_child) = (-res1.0, child1);
@@ -116,11 +125,19 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
             if alpha >= beta - game.epsilon() {
                 break;
             }
+            {
+                if let Ok(opt_instant) = time.read() {
+                    if opt_instant.is_some_and(|instant| Instant::now() > instant) {
+                        return (value, best_child);
+                    }
+                }
+            }
             let nega_res = self.negamax(
                 &child,
                 depth.saturating_sub(1),
                 -beta.clone(),
                 -alpha.clone(),
+                time,
             );
             let nega_res_val = -nega_res.0;
             if nega_res_val > value {
@@ -128,6 +145,13 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
                 best_child = child;
             }
             alpha = alpha.max(value);
+        }
+        {
+            if let Ok(opt_instant) = time.read() {
+                if opt_instant.is_some_and(|instant| Instant::now() > instant) {
+                    return (value, best_child);
+                }
+            }
         }
 
         let entry_type = {
@@ -150,7 +174,13 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
         (value, best_child)
     }
 
-    fn mtdf_aux_serial(&self, root: &G, f: &f32, d: &usize) -> (f32, G) {
+    fn mtdf_aux_serial(
+        &self,
+        root: &G,
+        f: &f32,
+        d: &usize,
+        time: &RwLock<Option<Instant>>,
+    ) -> (f32, G) {
         let inner = |g: f32, mut ub: f32, mut lb: f32| {
             let beta = {
                 if (g - lb).abs() < root.epsilon() {
@@ -160,7 +190,7 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
                 }
             };
 
-            let nega_res = self.negamax(root, d.clone(), beta - root.mtdf_window(), beta);
+            let nega_res = self.negamax(root, d.clone(), beta - root.mtdf_window(), beta, time);
 
             if nega_res.0 < beta {
                 ub = nega_res.0
@@ -188,13 +218,14 @@ impl<G: GameState + Hash + Clone + Eq> MTDBot<G> {
     ///
     /// The parameter `root` is the current gamestate, the parameter
     /// `depth` is the number of moves to search ahead.
-    pub fn mtdf_serial(&self, root: &G, depth: &usize) -> (f32, G) {
+    pub fn mtdf_serial(&self, root: &G, depth: &usize, time_limit: Option<Instant>) -> (f32, G) {
+        let time = RwLock::new(time_limit);
         if self.table.is_none() {
-            let (n1, n2) = self.negamax(root, *depth, f32::NEG_INFINITY, f32::INFINITY);
+            let (n1, n2) = self.negamax(root, *depth, f32::NEG_INFINITY, f32::INFINITY, &time);
             return (n1, n2);
         }
 
-        let inner = |f: f32, d: &usize| self.mtdf_aux_serial(root, &f, d);
+        let inner = |f: f32, d: &usize| self.mtdf_aux_serial(root, &f, d, &time);
 
         let (mut f, mut best) = inner(root.initial_f(), &1);
 
@@ -216,6 +247,9 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
             return false;
         };
 
+        // TODO: if the entry is not found then we should insert it
+        // as invalid with a user? Or maybe have a separate map that
+        // gives the current node for each CPU
         if let Some(entry) = table.get(game) {
             entry.4 > 0
         } else {
@@ -252,7 +286,14 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
     }
 
     // see http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA/simplified_abdada.html
-    fn abdada(&self, game: &G, depth: &usize, alpha: &f32, beta: &f32) -> (f32, G) {
+    fn abdada(
+        &self,
+        game: &G,
+        depth: &usize,
+        alpha: &f32,
+        beta: &f32,
+        time: &RwLock<Option<Instant>>,
+    ) -> (f32, G) {
         let alpha_orig = alpha.clone();
 
         let mut alpha = alpha.clone();
@@ -307,7 +348,7 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
         );
 
         let child1 = children.remove(0);
-        let res1 = self.abdada(&child1, &depth.saturating_sub(1), &-beta, &-alpha);
+        let res1 = self.abdada(&child1, &depth.saturating_sub(1), &-beta, &-alpha, time);
 
         let (mut value, mut best_child) = (-res1.0, child1);
         alpha = alpha.max(value);
@@ -318,13 +359,20 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
             if alpha >= beta - game.epsilon() {
                 break;
             }
+            {
+                if let Ok(opt_instant) = time.read() {
+                    if opt_instant.is_some_and(|instant| Instant::now() > instant) {
+                        return (value, best_child);
+                    }
+                }
+            }
             if self.defer_move(&child, depth) {
                 deferred_moves.push(child);
                 continue;
             }
 
             self.start_search(&child, depth);
-            let res = self.abdada(&child, &depth.saturating_sub(1), &-beta, &-alpha);
+            let res = self.abdada(&child, &depth.saturating_sub(1), &-beta, &-alpha, time);
             let res = (-res.0, child.clone());
             self.finish_search(&child, depth);
 
@@ -338,14 +386,28 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
             if alpha >= beta - game.epsilon() {
                 break;
             }
+            {
+                if let Ok(opt_instant) = time.read() {
+                    if opt_instant.is_some_and(|instant| Instant::now() > instant) {
+                        return (value, best_child);
+                    }
+                }
+            }
 
-            let res = self.abdada(&child, &depth.saturating_sub(1), &-beta, &-alpha);
+            let res = self.abdada(&child, &depth.saturating_sub(1), &-beta, &-alpha, time);
             let res = (-res.0, child.clone());
 
             if res.0 > value {
                 (value, best_child) = res;
             }
             alpha = alpha.max(value);
+        }
+        {
+            if let Ok(opt_instant) = time.read() {
+                if opt_instant.is_some_and(|instant| Instant::now() > instant) {
+                    return (value, best_child);
+                }
+            }
         }
 
         let entry_type = {
@@ -374,7 +436,7 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
         (value, best_child)
     }
 
-    fn mtdf_aux(&self, root: &G, f: &f32, d: &usize) -> (f32, G) {
+    fn mtdf_aux(&self, root: &G, f: &f32, d: &usize, time: &RwLock<Option<Instant>>) -> (f32, G) {
         let ncpus = num_cpus::get();
         let inner = |g: f32, mut ub: f32, mut lb: f32| {
             let beta = {
@@ -387,17 +449,36 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
 
             let nega_res = {
                 if d >= &root.abdad_defer_depth() {
+                    let new_time = {
+                        let original = time.read().unwrap();
+                        RwLock::new(original.clone())
+                    };
                     let window = root.mtdf_window();
                     let r = RwLock::new(root);
-                    let results: Vec<(f32, G)> = (0..ncpus)
+                    let _: Vec<()> = (0..ncpus)
                         .into_par_iter()
                         .map(|_| {
-                            self.abdada(&r.read().unwrap(), d, &(beta - window), &(beta.clone()))
+                            self.abdada(
+                                &r.read().unwrap(),
+                                d,
+                                &(beta - window),
+                                &(beta.clone()),
+                                &new_time,
+                            );
+                            if let Ok(mut t) = new_time.write() {
+                                *t = Some(Instant::now());
+                            }
                         })
                         .collect();
-                    results.into_iter().nth(0).unwrap()
+                    self.abdada(
+                        &root,
+                        &0,
+                        &(beta - window),
+                        &(beta.clone()),
+                        &RwLock::new(None),
+                    )
                 } else {
-                    self.negamax(root, d.clone(), beta - root.mtdf_window(), beta)
+                    self.negamax(root, d.clone(), beta - root.mtdf_window(), beta, &time)
                 }
             };
 
@@ -426,14 +507,17 @@ impl<G: GameState + Hash + Clone + Eq + Sync + Send> MTDBot<G> {
     /// of the game and the second element is the best move.
     ///
     /// The parameter `root` is the current gamestate, the parameter
-    /// `depth` is the number of moves to search ahead.
-    pub fn mtdf(&self, root: &G, depth: &usize) -> (f32, G) {
+    /// `depth` is the number of moves to search ahead. The bot will use
+    /// iterative deepening and stop early approximately at `time_limit` if
+    /// it is Some (it may stop slightly later).
+    pub fn mtdf(&self, root: &G, depth: &usize, time_limit: Option<Instant>) -> (f32, G) {
+        let time = RwLock::new(time_limit);
         if self.table.is_none() {
-            let (n1, n2) = self.negamax(root, *depth, f32::NEG_INFINITY, f32::INFINITY);
+            let (n1, n2) = self.negamax(root, *depth, f32::NEG_INFINITY, f32::INFINITY, &time);
             return (n1, n2);
         }
 
-        let inner = |f: f32, d: &usize| self.mtdf_aux(root, &f, d);
+        let inner = |f: f32, d: &usize| self.mtdf_aux(root, &f, d, &time);
 
         let (mut f, mut best) = inner(root.initial_f(), &1);
 
