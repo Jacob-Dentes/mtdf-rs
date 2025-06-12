@@ -5,7 +5,7 @@ edition = "2021"
 description = "A (bad) Rust implementation of the MTD(f) algorithm."
 categories = ["game-development"]
 keywords = ["ai", "game", "minimax", "mtdf"]
-license = "MIT or Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Jacob-Dentes/mtdf-rs/tree/main"
 
 [dependencies]
